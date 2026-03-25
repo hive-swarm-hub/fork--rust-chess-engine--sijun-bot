@@ -160,12 +160,12 @@ const LOWER_BOUND: u8 = 1;
 const UPPER_BOUND: u8 = 2;
 
 const PAWN: i32 = 100;
-const KNIGHT: i32 = 320;
-const BISHOP: i32 = 330;
-const ROOK: i32 = 500;
-const QUEEN: i32 = 900;
+const KNIGHT: i32 = 310;
+const BISHOP: i32 = 333;
+const ROOK: i32 = 550;
+const QUEEN: i32 = 950;
 
-const BISHOP_PAIR_BONUS: i32 = 30;
+const BISHOP_PAIR_BONUS: i32 = 45;
 const CASTLED_KING_BONUS: i32 = 18;
 const DOUBLED_PAWN_PENALTY: i32 = 14;
 const ISOLATED_PAWN_PENALTY: i32 = 11;
@@ -852,16 +852,12 @@ impl RustAlphaBetaEngine {
             let mating_value = MATE_SCORE - ply as i32;
             if mating_value < beta {
                 beta = mating_value;
-                if alpha >= beta {
-                    return Some(beta);
-                }
+                if alpha >= beta { return Some(beta); }
             }
             let mated_value = -MATE_SCORE + ply as i32;
             if mated_value > alpha {
                 alpha = mated_value;
-                if alpha >= beta {
-                    return Some(alpha);
-                }
+                if alpha >= beta { return Some(alpha); }
             }
         }
 
