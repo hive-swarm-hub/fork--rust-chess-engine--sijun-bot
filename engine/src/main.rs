@@ -127,8 +127,6 @@ fn main() {
 // Engine code below
 // =============================================================================
 
-use std::array;
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -371,34 +369,33 @@ struct ScoredMove {
 
 #[derive(Clone)]
 struct RepetitionTracker {
-    counts: HashMap<u64, u8>,
+    hashes: Vec<u64>,
 }
 
 impl RepetitionTracker {
     fn new(root_hash: u64) -> Self {
-        let mut counts = HashMap::with_capacity(64);
-        counts.insert(root_hash, 1);
-        Self { counts }
+        let mut hashes = Vec::with_capacity(128);
+        hashes.push(root_hash);
+        Self { hashes }
     }
 
     fn count(&self, hash: u64) -> u8 {
-        *self.counts.get(&hash).unwrap_or(&0)
+        let mut c = 0u8;
+        for &h in &self.hashes {
+            if h == hash {
+                c += 1;
+                if c >= 3 { return c; }
+            }
+        }
+        c
     }
 
     fn push(&mut self, hash: u64) {
-        let count = self.counts.entry(hash).or_insert(0);
-        *count = count.saturating_add(1);
+        self.hashes.push(hash);
     }
 
-    fn pop(&mut self, hash: u64) {
-        let Some(count) = self.counts.get_mut(&hash) else {
-            return;
-        };
-        if *count <= 1 {
-            self.counts.remove(&hash);
-        } else {
-            *count -= 1;
-        }
+    fn pop(&mut self, _hash: u64) {
+        self.hashes.pop();
     }
 }
 
@@ -2116,8 +2113,8 @@ fn tapered_score(midgame: i32, endgame: i32, phase: i32) -> i32 {
 }
 
 fn analyze_pawns(board: &Board) -> PawnCacheEntry {
-    let mut white_ranks: [Vec<i32>; 8] = array::from_fn(|_| Vec::new());
-    let mut black_ranks: [Vec<i32>; 8] = array::from_fn(|_| Vec::new());
+    let mut white_rank_bits: [u8; 8] = [0; 8];
+    let mut black_rank_bits: [u8; 8] = [0; 8];
     let mut white_files = [0_u8; 8];
     let mut black_files = [0_u8; 8];
     let mut white_center_mg = 0;
@@ -2126,7 +2123,7 @@ fn analyze_pawns(board: &Board) -> PawnCacheEntry {
     for square in piece_bb(board, Color::White, Piece::Pawn) {
         let file = file_index(square) as usize;
         let rank = rank_index(square);
-        white_ranks[file].push(rank);
+        white_rank_bits[file] |= 1u8 << rank;
         white_files[file] += 1;
         if file == 3 || file == 4 {
             if (3..=4).contains(&rank) {
@@ -2141,7 +2138,7 @@ fn analyze_pawns(board: &Board) -> PawnCacheEntry {
     for square in piece_bb(board, Color::Black, Piece::Pawn) {
         let file = file_index(square) as usize;
         let rank = rank_index(square);
-        black_ranks[file].push(rank);
+        black_rank_bits[file] |= 1u8 << rank;
         black_files[file] += 1;
         if file == 3 || file == 4 {
             if (3..=4).contains(&rank) {
@@ -2153,13 +2150,13 @@ fn analyze_pawns(board: &Board) -> PawnCacheEntry {
         }
     }
 
-    let (mut white_structure_mg, mut white_structure_eg) = pawn_structure_from_files(&white_ranks);
-    let (mut black_structure_mg, mut black_structure_eg) = pawn_structure_from_files(&black_ranks);
+    let (mut white_structure_mg, mut white_structure_eg) = pawn_structure_from_bits(&white_rank_bits);
+    let (mut black_structure_mg, mut black_structure_eg) = pawn_structure_from_bits(&black_rank_bits);
 
     for square in piece_bb(board, Color::White, Piece::Pawn) {
         let file = file_index(square);
         let rank = rank_index(square);
-        if is_passed_pawn(Color::White, file, rank, &black_ranks) {
+        if is_passed_pawn_bits(Color::White, file, rank, &black_rank_bits) {
             let progress = rank as usize;
             white_structure_mg += PASSED_PAWN_BONUS[progress];
             white_structure_eg += PASSED_PAWN_BONUS[progress] + ENDGAME_PASSED_PAWN_BONUS[progress];
@@ -2172,7 +2169,7 @@ fn analyze_pawns(board: &Board) -> PawnCacheEntry {
     for square in piece_bb(board, Color::Black, Piece::Pawn) {
         let file = file_index(square);
         let rank = rank_index(square);
-        if is_passed_pawn(Color::Black, file, rank, &white_ranks) {
+        if is_passed_pawn_bits(Color::Black, file, rank, &white_rank_bits) {
             let progress = (7 - rank) as usize;
             black_structure_mg += PASSED_PAWN_BONUS[progress];
             black_structure_eg += PASSED_PAWN_BONUS[progress] + ENDGAME_PASSED_PAWN_BONUS[progress];
@@ -2184,7 +2181,7 @@ fn analyze_pawns(board: &Board) -> PawnCacheEntry {
     }
 
     PawnCacheEntry {
-        key: 0, // will be set by caller
+        key: 0,
         white_structure_mg,
         black_structure_mg,
         white_structure_eg,
@@ -2196,44 +2193,43 @@ fn analyze_pawns(board: &Board) -> PawnCacheEntry {
     }
 }
 
-fn pawn_structure_from_files(files: &[Vec<i32>; 8]) -> (i32, i32) {
+fn pawn_structure_from_bits(file_bits: &[u8; 8]) -> (i32, i32) {
     let mut midgame = 0;
     let mut endgame = 0;
-    for (file_idx, ranks) in files.iter().enumerate() {
-        if ranks.len() > 1 {
-            let penalty = DOUBLED_PAWN_PENALTY * (ranks.len() as i32 - 1);
+    for file_idx in 0..8 {
+        let count = file_bits[file_idx].count_ones() as i32;
+        if count > 1 {
+            let penalty = DOUBLED_PAWN_PENALTY * (count - 1);
             midgame -= penalty;
             endgame -= penalty * 3 / 4;
         }
-
-        for _ in ranks {
-            if is_isolated_pawn(files, file_idx as i32) {
-                midgame -= ISOLATED_PAWN_PENALTY;
-                endgame -= ISOLATED_PAWN_PENALTY * 3 / 4;
+        if count > 0 {
+            let left = if file_idx > 0 { file_bits[file_idx - 1] } else { 0 };
+            let right = if file_idx < 7 { file_bits[file_idx + 1] } else { 0 };
+            if left == 0 && right == 0 {
+                midgame -= ISOLATED_PAWN_PENALTY * count;
+                endgame -= ISOLATED_PAWN_PENALTY * count * 3 / 4;
             }
         }
     }
     (midgame, endgame)
 }
 
-fn is_isolated_pawn(files: &[Vec<i32>], file_idx: i32) -> bool {
-    let left_has = file_idx > 0 && !files[(file_idx - 1) as usize].is_empty();
-    let right_has = file_idx < 7 && !files[(file_idx + 1) as usize].is_empty();
-    !left_has && !right_has
-}
-
-fn is_passed_pawn(color: Color, file_idx: i32, rank: i32, enemy_files: &[Vec<i32>]) -> bool {
+fn is_passed_pawn_bits(color: Color, file_idx: i32, rank: i32, enemy_bits: &[u8; 8]) -> bool {
     for delta in -1..=1 {
-        let enemy_file = file_idx + delta;
-        if !(0..=7).contains(&enemy_file) {
-            continue;
-        }
-        for enemy_rank in &enemy_files[enemy_file as usize] {
-            if color == Color::White && *enemy_rank > rank {
-                return false;
+        let ef = file_idx + delta;
+        if !(0..=7).contains(&ef) { continue; }
+        let bits = enemy_bits[ef as usize];
+        if bits == 0 { continue; }
+        if color == Color::White {
+            if rank < 7 {
+                let mask = 0xFFu8 << (rank + 1);
+                if bits & mask != 0 { return false; }
             }
-            if color == Color::Black && *enemy_rank < rank {
-                return false;
+        } else {
+            if rank > 0 {
+                let mask = (1u8 << rank) - 1;
+                if bits & mask != 0 { return false; }
             }
         }
     }
