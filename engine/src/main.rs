@@ -68,7 +68,7 @@ fn main() {
                 let side = current_board.side_to_move();
                 let mut time_ms: u64 = 10000;
                 let mut inc_ms: u64 = 0;
-                let mut movestogo: u32 = 0;
+                let mut _movestogo: u32 = 30;
                 let mut max_depth: Option<i32> = None;
                 let mut movetime: Option<u64> = None;
 
@@ -79,7 +79,7 @@ fn main() {
                         "btime" => { if let Some(t) = tokens.get(i+1).and_then(|t| t.parse().ok()) { if side == Color::Black { time_ms = t; } } i += 2; }
                         "winc"  => { if let Some(t) = tokens.get(i+1).and_then(|t| t.parse().ok()) { if side == Color::White { inc_ms = t; } } i += 2; }
                         "binc"  => { if let Some(t) = tokens.get(i+1).and_then(|t| t.parse().ok()) { if side == Color::Black { inc_ms = t; } } i += 2; }
-                        "movestogo" => { movestogo = tokens.get(i+1).and_then(|t| t.parse().ok()).unwrap_or(0); i += 2; }
+                        "movestogo" => { _movestogo = tokens.get(i+1).and_then(|t| t.parse().ok()).unwrap_or(30); i += 2; }
                         "depth" => { max_depth = tokens.get(i+1).and_then(|t| t.parse().ok()); i += 2; }
                         "movetime" => { movetime = tokens.get(i+1).and_then(|t| t.parse().ok()); i += 2; }
                         "infinite" => { time_ms = 999_999_999; i += 1; }
@@ -89,15 +89,9 @@ fn main() {
 
                 let alloc_ms = if let Some(mt) = movetime {
                     mt
-                } else if movestogo > 0 {
-                    // Moves-to-go time control: use time/moves_remaining + increment
-                    let base = time_ms / (movestogo as u64 + 1);
-                    let with_inc = base + inc_ms * 3 / 4;
-                    with_inc.min(time_ms / 2).max(100)
                 } else {
-                    // Sudden death: use 1/20 of remaining + increment
                     let base = time_ms / 20;
-                    let with_inc = base + inc_ms * 3 / 4;
+                    let with_inc = base + inc_ms;
                     with_inc.min(time_ms / 3).max(100)
                 };
 
@@ -141,8 +135,7 @@ use chess::{
 const INFINITY: i32 = 1_000_000;
 const MATE_SCORE: i32 = 100_000;
 const DRAW_SCORE: i32 = 0;
-const CONTEMPT: i32 = 0;
-const ASPIRATION_WINDOW: i32 = 25;
+const ASPIRATION_WINDOW: i32 = 40;
 const HISTORY_SIZE: usize = 1 << 16;
 const KILLER_PLY_CAPACITY: usize = 128;
 const MAX_ROOT_THREADS: usize = 8;
@@ -166,6 +159,18 @@ const EXACT: u8 = 0;
 const LOWER_BOUND: u8 = 1;
 const UPPER_BOUND: u8 = 2;
 
+// PeSTO-style piece values (tuned for midgame/endgame)
+const PAWN_MG: i32 = 82;
+const KNIGHT_MG: i32 = 337;
+const BISHOP_MG: i32 = 365;
+const ROOK_MG: i32 = 477;
+const QUEEN_MG: i32 = 1025;
+const PAWN_EG: i32 = 94;
+const KNIGHT_EG: i32 = 281;
+const BISHOP_EG: i32 = 297;
+const ROOK_EG: i32 = 512;
+const QUEEN_EG: i32 = 936;
+// Legacy piece values for move ordering (SEE, MVV-LVA)
 const PAWN: i32 = 100;
 const KNIGHT: i32 = 320;
 const BISHOP: i32 = 330;
@@ -199,83 +204,142 @@ const THREAT_QUEEN_BY_ROOK: i32 = 25;
 const PASSED_PAWN_BONUS: [i32; 8] = [0, 8, 12, 20, 35, 60, 90, 0];
 const ENDGAME_PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 4, 8, 16, 32, 56, 0];
 const SUPPORTED_PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 3, 6, 12, 20, 32, 0];
-const REVERSE_FUTILITY_MARGIN: [i32; 5] = [0, 85, 150, 235, 330];
-const FUTILITY_MARGIN: [i32; 5] = [0, 100, 170, 260, 370];
-const RAZOR_MARGIN: [i32; 4] = [0, 250, 380, 520];
+const REVERSE_FUTILITY_MARGIN: [i32; 4] = [0, 85, 150, 235];
+const FUTILITY_MARGIN: [i32; 4] = [0, 100, 170, 260];
+const RAZOR_MARGIN: [i32; 3] = [0, 250, 380];
 
+// PeSTO midgame piece-square tables (indexed rank1=0..7 to rank8=56..63)
 const PAWN_TABLE: [i32; 64] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 10, -20, -20, 10, 10, 5, 5, -5, -10, 0, 0, -10, -5, 5, 0, 0, 0,
-    20, 20, 0, 0, 0, 5, 5, 10, 25, 25, 10, 5, 5, 10, 10, 20, 30, 30, 20, 10, 10, 50, 50, 50, 50,
-    50, 50, 50, 50, 0, 0, 0, 0, 0, 0, 0, 0,
+      0,   0,   0,   0,   0,   0,   0,   0,
+    -35,  -1, -20, -23, -15,  24,  38, -22,
+    -26,  -4,  -4, -10,   3,   3,  33, -12,
+    -27,  -2,  -5,  12,  17,   6,  10, -25,
+    -14,  13,   6,  21,  23,  12,  17, -23,
+     -6,   7,  26,  31,  65,  56,  25, -20,
+     98, 134,  61,  95,  68, 126,  34, -11,
+      0,   0,   0,   0,   0,   0,   0,   0,
 ];
 
 const KNIGHT_TABLE: [i32; 64] = [
-    -50, -40, -30, -30, -30, -30, -40, -50, -40, -20, 0, 0, 0, 0, -20, -40, -30, 0, 10, 15, 15, 10,
-    0, -30, -30, 5, 15, 20, 20, 15, 5, -30, -30, 0, 15, 20, 20, 15, 0, -30, -30, 5, 10, 15, 15, 10,
-    5, -30, -40, -20, 0, 5, 5, 0, -20, -40, -50, -40, -30, -30, -30, -30, -40, -50,
+   -167, -89, -34, -49,  61, -97, -15,-107,
+    -73, -41,  72,  36,  23,  62,   7, -17,
+    -47,  60,  37,  65,  84, 129,  73,  44,
+     -9,  17,  19,  53,  37,  69,  18,  22,
+    -13,   4,  16,  13,  28,  19,  21,  -8,
+    -23,  -9,  12,  10,  19,  17,  25, -16,
+    -29, -53, -12,  -3,  -1,  18, -14, -19,
+   -105, -21, -58, -33, -17, -28, -19, -23,
 ];
 
 const BISHOP_TABLE: [i32; 64] = [
-    -20, -10, -10, -10, -10, -10, -10, -20, -10, 0, 0, 0, 0, 0, 0, -10, -10, 0, 5, 10, 10, 5, 0,
-    -10, -10, 5, 5, 10, 10, 5, 5, -10, -10, 0, 10, 10, 10, 10, 0, -10, -10, 10, 10, 10, 10, 10, 10,
-    -10, -10, 5, 0, 0, 0, 0, 5, -10, -20, -10, -10, -10, -10, -10, -10, -20,
+    -29,   4, -82, -37, -25, -42,   7,  -8,
+    -26,  16, -18, -13,  30,  59,  18, -47,
+    -16,  37,  43,  40,  35,  50,  37,  -2,
+     -4,   5,  19,  50,  37,  37,   7,  -2,
+     -6,  13,  13,  26,  34,  12,  10,   4,
+      0,  15,  15,  15,  14,  27,  18,  10,
+      4,  15,  16,   0,   7,  21,  33,   1,
+    -33,  -3, -14, -21, -13, -12, -39, -21,
 ];
 
 const ROOK_TABLE: [i32; 64] = [
-    0, 0, 0, 5, 5, 0, 0, 0, -5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 0, 0, 0, 0,
-    0, -5, -5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 0, 0, 0, 0, 0, -5, 5, 10, 10, 10, 10, 10, 10, 5, 0, 0,
-    0, 0, 0, 0, 0, 0,
+     32,  42,  32,  51,  63,   9,  31,  43,
+     27,  32,  58,  62,  80,  67,  26,  44,
+     -5,  19,  26,  36,  17,  45,  61,  16,
+    -24, -11,   7,  26,  24,  35,  -8, -20,
+    -36, -26, -12,  -1,   9,  -7,   6, -23,
+    -45, -25, -16, -17,   3,   0,  -5, -33,
+    -44, -16, -20,  -9,  -1,  11,  -6, -71,
+    -19, -13,   1,  17,  16,   7, -37, -26,
 ];
 
 const QUEEN_TABLE: [i32; 64] = [
-    -20, -10, -10, -5, -5, -10, -10, -20, -10, 0, 0, 0, 0, 0, 0, -10, -10, 0, 5, 5, 5, 5, 0, -10,
-    -5, 0, 5, 5, 5, 5, 0, -5, 0, 0, 5, 5, 5, 5, 0, -5, -10, 5, 5, 5, 5, 5, 0, -10, -10, 0, 5, 0, 0,
-    0, 0, -10, -20, -10, -10, -5, -5, -10, -10, -20,
+    -28,   0,  29,  12,  59,  44,  43,  45,
+    -24, -39,  -5,   1, -16,  57,  28,  54,
+    -13, -17,   7,   8,  29,  56,  47,  57,
+    -27, -27, -16, -16,  -1,  17,  -2,   1,
+     -9, -26,  -9, -10,  -2,  -4,   3,  -3,
+    -14,   2, -11,  -2,  -5,   2,  14,   5,
+    -35,  -8,  11,   2,   8,  15,  -3,   1,
+     -1, -18,  -9,  10, -15, -25, -31, -50,
 ];
 
 const KING_MIDGAME_TABLE: [i32; 64] = [
-    -30, -40, -40, -50, -50, -40, -40, -30, -30, -40, -40, -50, -50, -40, -40, -30, -30, -40, -40,
-    -50, -50, -40, -40, -30, -30, -40, -40, -50, -50, -40, -40, -30, -20, -30, -30, -40, -40, -30,
-    -30, -20, -10, -20, -20, -20, -20, -20, -20, -10, 20, 20, 0, 0, 0, 0, 20, 20, 20, 30, 10, 0, 0,
-    10, 30, 20,
+    -65,  23,  16, -15, -56, -34,   2,  13,
+     29,  -1, -20,  -7,  -8,  -4, -38, -29,
+     -9,  24,   2, -16, -20,   6,  22, -22,
+    -17, -20, -12, -27, -30, -25, -14, -36,
+    -49,  -1, -27, -39, -46, -44, -33, -51,
+    -14, -14, -22, -46, -44, -30, -15, -27,
+      1,   7,  -8, -64, -43, -16,   9,   8,
+    -15,  36,  12, -54,   8, -28,  24,  14,
 ];
 
 const KING_ENDGAME_TABLE: [i32; 64] = [
-    -50, -40, -30, -20, -20, -30, -40, -50, -30, -20, -10, 0, 0, -10, -20, -30, -30, -10, 20, 30,
-    30, 20, -10, -30, -30, -10, 30, 40, 40, 30, -10, -30, -30, -10, 30, 40, 40, 30, -10, -30, -30,
-    -10, 20, 30, 30, 20, -10, -30, -30, -30, 0, 0, 0, 0, -30, -30, -50, -30, -30, -30, -30, -30,
-    -30, -50,
+    -74, -35, -18, -18, -11,  15,   4, -17,
+    -12,  17,  14,  17,  17,  38,  23,  11,
+     10,  17,  23,  15,  20,  45,  44,  13,
+     -8,  22,  24,  27,  26,  33,  26,   3,
+    -18,  -4,  21,  24,  27,  23,   9, -11,
+    -19,  -3,  11,  21,  23,  16,   7,  -9,
+    -27, -11,   4,  13,  14,   4,  -5, -17,
+    -53, -34, -21, -11, -28, -14, -24, -43,
 ];
 
-// Endgame piece-square tables (for proper tapered eval)
+// PeSTO endgame piece-square tables
 const PAWN_EG_TABLE: [i32; 64] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    20, 20, 20, 20, 20, 20, 20, 20, 30, 30, 30, 30, 30, 30, 30, 30, 50, 50, 50, 50, 50, 50, 50, 50,
-    80, 80, 80, 80, 80, 80, 80, 80, 0, 0, 0, 0, 0, 0, 0, 0,
+      0,   0,   0,   0,   0,   0,   0,   0,
+     13,   8,   8,  10,  13,   0,   2,  -7,
+      4,   7,  -6,   1,   0,  -5,  -1,  -8,
+     13,   9,  -3,  -7,  -7,  -8,   3,  -1,
+     32,  24,  13,   5,  -2,   4,  17,  17,
+     94, 100,  85,  67,  56,  53,  82,  84,
+    178, 173, 158, 134, 147, 132, 165, 187,
+      0,   0,   0,   0,   0,   0,   0,   0,
 ];
 
 const KNIGHT_EG_TABLE: [i32; 64] = [
-    -30, -20, -10, -10, -10, -10, -20, -30, -20, -10, 0, 5, 5, 0, -10, -20, -10, 0, 10, 15, 15, 10,
-    0, -10, -10, 5, 15, 20, 20, 15, 5, -10, -10, 5, 15, 20, 20, 15, 5, -10, -10, 0, 10, 15, 15, 10,
-    0, -10, -20, -10, 0, 5, 5, 0, -10, -20, -30, -20, -10, -10, -10, -10, -20, -30,
+    -58, -38, -13, -28, -31, -27, -63, -99,
+    -25,  -8, -25,  -2,  -9, -25, -24, -52,
+    -24, -20,  10,   9,  -1,  -9, -19, -41,
+    -17,   3,  22,  22,  22,  11,   8, -18,
+    -18,  -6,  16,  25,  16,  17,   4, -18,
+    -23,  -3,  -1,  15,  10,  -3, -20, -22,
+    -42, -20, -10,  -5,  -2, -20, -23, -44,
+    -29, -51, -23, -15, -22, -18, -50, -64,
 ];
 
 const BISHOP_EG_TABLE: [i32; 64] = [
-    -15, -10, -10, -10, -10, -10, -10, -15, -10, 0, 0, 0, 0, 0, 0, -10, -10, 0, 5, 10, 10, 5, 0,
-    -10, -10, 0, 10, 15, 15, 10, 0, -10, -10, 0, 10, 15, 15, 10, 0, -10, -10, 0, 5, 10, 10, 5, 0,
-    -10, -10, 0, 0, 0, 0, 0, 0, -10, -15, -10, -10, -10, -10, -10, -10, -15,
+    -14, -21, -11,  -8,  -7,  -9, -17, -24,
+     -8,  -4,   7, -12,  -3, -13,  -4, -14,
+      2,  -8,   0,  -1,  -2,   6,   0,   4,
+     -3,   9,  12,   9,  14,  10,   3,   2,
+     -6,   3,  13,  19,   7,  10,  -3,  -9,
+    -12,  -3,   8,  10,  13,   3,  -7, -15,
+    -14, -18,  -7,  -1,   4,  -9, -15, -27,
+    -23,  -9, -23,  -5,  -9, -16,  -5, -17,
 ];
 
 const ROOK_EG_TABLE: [i32; 64] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0,
+     13,  10,  18,  15,  12,  12,   8,   5,
+     11,  13,  13,  11,  -3,   3,   8,   3,
+      7,   7,   7,   5,   4,  -3,  -5,  -3,
+      4,   3,  13,   1,   2,   1,  -1,   2,
+      3,   5,   8,   4,  -5,  -6,  -8, -11,
+     -4,   0,  -5,  -1,  -7, -12,  -8, -16,
+     -6,  -6,   0,   2,  -9,  -9, -11,  -3,
+     -9,   2,   3,  -1,  -5, -13,   4, -20,
 ];
 
 const QUEEN_EG_TABLE: [i32; 64] = [
-    -10, -5, -5, -5, -5, -5, -5, -10, -5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 5, 5, 5, 5, 0, -5,
-    -5, 0, 5, 10, 10, 5, 0, -5, -5, 0, 5, 10, 10, 5, 0, -5, -5, 0, 5, 5, 5, 5, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5, -10, -5, -5, -5, -5, -5, -5, -10,
+     -9,  22,  22,  27,  27,  19,  10,  20,
+    -17,  20,  32,  41,  58,  25,  30,   0,
+    -20,   6,   9,  49,  47,  35,  19,   9,
+      3,  22,  24,  45,  57,  40,  57,  36,
+    -18,  28,  19,  47,  31,  34,  39,  23,
+    -16, -27,  15,   6,   9,  17,  10,   5,
+    -22, -23, -30, -16, -16, -23, -36, -32,
+    -33, -28, -22, -43,  -5, -32, -20, -41,
 ];
 
 // Precomputed LMR reduction table
@@ -428,7 +492,6 @@ struct RustAlphaBetaEngine {
     capture_history: Vec<i16>,
     countermove: Vec<Option<ChessMove>>,  // indexed by previous move's move_key
     move_stack: Vec<Option<ChessMove>>,  // move played at each ply for countermove tracking
-    eval_stack: Vec<i32>,  // static eval at each ply for improving detection
     eval_cache: Vec<EvalCacheEntry>,
     pawn_cache: Vec<PawnCacheEntry>,
     deadline: Option<Instant>,
@@ -447,7 +510,6 @@ impl RustAlphaBetaEngine {
             capture_history: vec![0; HISTORY_SIZE * CAPTURE_HISTORY_PIECES],
             countermove: vec![None; HISTORY_SIZE],
             move_stack: vec![None; KILLER_PLY_CAPACITY],
-            eval_stack: vec![0; KILLER_PLY_CAPACITY],
             eval_cache: vec![EvalCacheEntry::default(); EVAL_CACHE_SIZE],
             pawn_cache: vec![PawnCacheEntry::default(); PAWN_CACHE_SIZE],
             deadline: None,
@@ -576,10 +638,9 @@ impl RustAlphaBetaEngine {
     ) -> Option<(i32, ChessMove)> {
         let mut alpha = -INFINITY;
         let mut beta = INFINITY;
-        let mut delta = ASPIRATION_WINDOW;
         if let Some(score) = previous_score.filter(|_| depth >= 3) {
-            alpha = score - delta;
-            beta = score + delta;
+            alpha = score - ASPIRATION_WINDOW;
+            beta = score + ASPIRATION_WINDOW;
         }
 
         loop {
@@ -590,15 +651,13 @@ impl RustAlphaBetaEngine {
             };
 
             if alpha != -INFINITY && score <= alpha {
-                // Fail low: widen alpha, keep beta
-                delta *= 2;
-                alpha = (score - delta).max(-INFINITY);
+                alpha = -INFINITY;
+                beta = INFINITY;
                 continue;
             }
             if beta != INFINITY && score >= beta {
-                // Fail high: widen beta, keep alpha
-                delta *= 2;
-                beta = (score + delta).min(INFINITY);
+                alpha = -INFINITY;
+                beta = INFINITY;
                 continue;
             }
             return Some((score, best_move));
@@ -788,7 +847,6 @@ impl RustAlphaBetaEngine {
             capture_history: self.capture_history.clone(),
             countermove: self.countermove.clone(),
             move_stack: self.move_stack.clone(),
-            eval_stack: self.eval_stack.clone(),
             eval_cache: self.eval_cache.clone(),
             pawn_cache: self.pawn_cache.clone(),
             deadline: self.deadline,
@@ -855,19 +913,20 @@ impl RustAlphaBetaEngine {
             return Some(terminal_score);
         }
 
+        // Mate distance pruning
+        {
+            let mate_alpha = (-MATE_SCORE + ply as i32).max(alpha);
+            let mate_beta = (MATE_SCORE - ply as i32 - 1).min(beta);
+            if mate_alpha >= mate_beta {
+                return Some(mate_alpha);
+            }
+        }
+
         // Max ply limit to prevent search explosions
         if ply >= 96 {
             return Some(self.evaluate(board));
         }
 
-        // Mate distance pruning
-        let mate_alpha = (-MATE_SCORE + ply as i32).max(alpha);
-        let mate_beta = (MATE_SCORE - ply as i32 - 1).min(beta);
-        if mate_alpha >= mate_beta {
-            return Some(mate_alpha);
-        }
-
-        let is_pv = beta - alpha > 1;
         let in_check_now = in_check(board);
         let mut effective_depth = depth;
         // Cap check extension to prevent infinite check sequences
@@ -922,21 +981,14 @@ impl RustAlphaBetaEngine {
             None
         };
 
-        // Store static eval for improving detection
-        self.ensure_ply_capacity(ply + 2);
-        self.eval_stack[ply] = static_eval.unwrap_or(0);
-        let improving = !in_check_now && ply >= 2 && static_eval.unwrap_or(0) > self.eval_stack[ply.saturating_sub(2)];
-
         if let Some(eval) = static_eval {
-            // Reverse futility pruning — extended to depth 4, tighter when improving
-            if effective_depth <= 4
-                && eval >= beta + REVERSE_FUTILITY_MARGIN[effective_depth as usize] - if improving { 0 } else { 50 }
+            if effective_depth <= 3
+                && eval >= beta + REVERSE_FUTILITY_MARGIN[effective_depth as usize]
                 && beta < MATE_SCORE - 1_000
             {
                 return Some(eval);
             }
-            // Razoring — extended to depth 3
-            if effective_depth <= 3
+            if effective_depth <= 2
                 && eval + RAZOR_MARGIN[effective_depth as usize] <= alpha
                 && alpha > -MATE_SCORE + 1_000
             {
@@ -944,18 +996,13 @@ impl RustAlphaBetaEngine {
             }
         }
 
-        // Null move pruning with adaptive R
         if effective_depth >= 3
             && !in_check_now
             && has_non_pawn_material(board, board.side_to_move())
             && beta < MATE_SCORE - 1_000
         {
             if let Some(null_board) = board.null_move() {
-                let mut reduction = 3 + effective_depth / 4;
-                // Increase reduction when eval is well above beta
-                if let Some(eval) = static_eval {
-                    reduction += ((eval - beta) / 200).clamp(0, 3);
-                }
+                let reduction = 2 + effective_depth / 3;
                 let null_hash = board_hash(&null_board);
                 repetition.push(null_hash);
                 let search = self.negamax(
@@ -1012,21 +1059,14 @@ impl RustAlphaBetaEngine {
 
             if is_quiet && !in_check_now && !gives_check_move {
                 if let Some(eval) = static_eval {
-                    // Futility pruning — extended to depth 4
-                    if effective_depth <= 4
+                    if effective_depth <= 3
                         && move_count > 1
                         && eval + FUTILITY_MARGIN[effective_depth as usize] <= alpha
                     {
                         continue;
                     }
                 }
-                // Late move pruning — tighter when not improving
-                let lmp_limit = if improving {
-                    late_move_pruning_limit(effective_depth)
-                } else {
-                    late_move_pruning_limit(effective_depth) * 2 / 3
-                };
-                if move_count > lmp_limit {
+                if move_count > late_move_pruning_limit(effective_depth) {
                     continue;
                 }
                 // SEE pruning for quiet moves at low depth
@@ -1036,13 +1076,6 @@ impl RustAlphaBetaEngine {
                     continue;
                 }
                 searched_quiets.push(chess_move);
-            }
-            // SEE pruning for bad captures
-            if is_capture_move && !in_check_now && move_count > 1
-                && effective_depth <= 3
-                && static_exchange_eval(board, chess_move) < -100 * effective_depth
-            {
-                continue;
             }
             if let Some(victim) = capture_victim {
                 searched_captures.push((chess_move, victim));
@@ -1091,25 +1124,18 @@ impl RustAlphaBetaEngine {
                     && !gives_check_move
                 {
                     let mut reduction = late_move_reduction(effective_depth, move_count);
-                    // Reduce less in PV nodes
-                    if is_pv {
-                        reduction = (reduction - 1).max(0);
-                    }
-                    // Reduce less for killers
+                    // Reduce less for countermoves and killers
+                    let mk = move_key(chess_move) as usize;
                     if self.killer_moves.get(ply).map_or(false, |k| k[0] == Some(chess_move) || k[1] == Some(chess_move)) {
                         reduction = (reduction - 1).max(0);
                     }
-                    // Reduce more/less based on history
-                    let hist = self.history_heuristic[move_key(chess_move) as usize];
-                    if hist < -1000 {
-                        reduction += 1;
-                    } else if hist > 5000 {
-                        reduction = (reduction - 1).max(0);
-                    }
                     // Reduce more if not improving
-                    if !improving {
-                        reduction += 1;
+                    if let Some(eval) = static_eval {
+                        if eval <= alpha {
+                            reduction += 1;
+                        }
                     }
+                    let _ = mk; // suppress warning
                     search_depth = (search_depth - reduction).max(0);
                 }
 
@@ -1340,57 +1366,57 @@ impl RustAlphaBetaEngine {
 
         for square in piece_bb(board, Color::White, Piece::Pawn) {
             let idx = square_index(square);
-            white_mg += PAWN + PAWN_TABLE[idx];
-            white_eg += PAWN + PAWN_EG_TABLE[idx];
+            white_mg += PAWN_MG + PAWN_TABLE[idx];
+            white_eg += PAWN_EG + PAWN_EG_TABLE[idx];
         }
         for square in piece_bb(board, Color::Black, Piece::Pawn) {
             let idx = mirror_index(square_index(square));
-            black_mg += PAWN + PAWN_TABLE[idx];
-            black_eg += PAWN + PAWN_EG_TABLE[idx];
+            black_mg += PAWN_MG + PAWN_TABLE[idx];
+            black_eg += PAWN_EG + PAWN_EG_TABLE[idx];
         }
 
         for square in piece_bb(board, Color::White, Piece::Knight) {
             let idx = square_index(square);
-            white_mg += KNIGHT + KNIGHT_TABLE[idx];
-            white_eg += KNIGHT + KNIGHT_EG_TABLE[idx];
+            white_mg += KNIGHT_MG + KNIGHT_TABLE[idx];
+            white_eg += KNIGHT_EG + KNIGHT_EG_TABLE[idx];
         }
         for square in piece_bb(board, Color::Black, Piece::Knight) {
             let idx = mirror_index(square_index(square));
-            black_mg += KNIGHT + KNIGHT_TABLE[idx];
-            black_eg += KNIGHT + KNIGHT_EG_TABLE[idx];
+            black_mg += KNIGHT_MG + KNIGHT_TABLE[idx];
+            black_eg += KNIGHT_EG + KNIGHT_EG_TABLE[idx];
         }
 
         for square in piece_bb(board, Color::White, Piece::Bishop) {
             let idx = square_index(square);
-            white_mg += BISHOP + BISHOP_TABLE[idx];
-            white_eg += BISHOP + BISHOP_EG_TABLE[idx];
+            white_mg += BISHOP_MG + BISHOP_TABLE[idx];
+            white_eg += BISHOP_EG + BISHOP_EG_TABLE[idx];
         }
         for square in piece_bb(board, Color::Black, Piece::Bishop) {
             let idx = mirror_index(square_index(square));
-            black_mg += BISHOP + BISHOP_TABLE[idx];
-            black_eg += BISHOP + BISHOP_EG_TABLE[idx];
+            black_mg += BISHOP_MG + BISHOP_TABLE[idx];
+            black_eg += BISHOP_EG + BISHOP_EG_TABLE[idx];
         }
 
         for square in piece_bb(board, Color::White, Piece::Rook) {
             let idx = square_index(square);
-            white_mg += ROOK + ROOK_TABLE[idx];
-            white_eg += ROOK + ROOK_EG_TABLE[idx];
+            white_mg += ROOK_MG + ROOK_TABLE[idx];
+            white_eg += ROOK_EG + ROOK_EG_TABLE[idx];
         }
         for square in piece_bb(board, Color::Black, Piece::Rook) {
             let idx = mirror_index(square_index(square));
-            black_mg += ROOK + ROOK_TABLE[idx];
-            black_eg += ROOK + ROOK_EG_TABLE[idx];
+            black_mg += ROOK_MG + ROOK_TABLE[idx];
+            black_eg += ROOK_EG + ROOK_EG_TABLE[idx];
         }
 
         for square in piece_bb(board, Color::White, Piece::Queen) {
             let idx = square_index(square);
-            white_mg += QUEEN + QUEEN_TABLE[idx];
-            white_eg += QUEEN + QUEEN_EG_TABLE[idx];
+            white_mg += QUEEN_MG + QUEEN_TABLE[idx];
+            white_eg += QUEEN_EG + QUEEN_EG_TABLE[idx];
         }
         for square in piece_bb(board, Color::Black, Piece::Queen) {
             let idx = mirror_index(square_index(square));
-            black_mg += QUEEN + QUEEN_TABLE[idx];
-            black_eg += QUEEN + QUEEN_EG_TABLE[idx];
+            black_mg += QUEEN_MG + QUEEN_TABLE[idx];
+            black_eg += QUEEN_EG + QUEEN_EG_TABLE[idx];
         }
 
         white_mg += king_position_score(board, Color::White, false);
@@ -1497,13 +1523,14 @@ impl RustAlphaBetaEngine {
     ) -> Option<i32> {
         match board.status() {
             BoardStatus::Checkmate => Some(-MATE_SCORE + ply as i32),
-            BoardStatus::Stalemate => Some(-CONTEMPT),
+            BoardStatus::Stalemate => Some(DRAW_SCORE),
             BoardStatus::Ongoing => {
                 let rep_count = repetition.count(board_hash(board));
                 if rep_count >= 3 {
-                    Some(-CONTEMPT)
+                    Some(DRAW_SCORE)
                 } else if rep_count >= 2 && ply > 0 {
-                    Some(-CONTEMPT)
+                    // 2-fold repetition in search = likely draw, treat as draw
+                    Some(DRAW_SCORE)
                 } else {
                     None
                 }
@@ -1575,7 +1602,6 @@ impl RustAlphaBetaEngine {
             }
         }
 
-        // Castling bonus (cheap to detect)
         if is_castling(board, chess_move) {
             score += 10_000;
         }
@@ -1595,9 +1621,7 @@ impl RustAlphaBetaEngine {
 
     fn update_history(&mut self, chess_move: ChessMove, delta: i32) {
         let history = &mut self.history_heuristic[move_key(chess_move) as usize];
-        // Gravity-based update: history += delta - history * |delta| / LIMIT
-        let clamped_delta = delta.clamp(-HISTORY_LIMIT, HISTORY_LIMIT);
-        *history += clamped_delta - *history * clamped_delta.abs() / HISTORY_LIMIT;
+        *history = (*history + delta).clamp(-HISTORY_LIMIT, HISTORY_LIMIT);
     }
 
     fn update_capture_history(&mut self, chess_move: ChessMove, victim: Piece, delta: i32) {
@@ -1612,9 +1636,6 @@ impl RustAlphaBetaEngine {
         }
         if self.move_stack.len() < size {
             self.move_stack.resize(size, None);
-        }
-        if self.eval_stack.len() < size {
-            self.eval_stack.resize(size, 0);
         }
     }
 
@@ -2327,15 +2348,14 @@ fn threat_score(board: &Board, color: Color) -> i32 {
 
 /// Connected rooks: bonus when rooks can see each other (same rank/file, no pieces between)
 fn connected_rooks_score(board: &Board, color: Color) -> i32 {
-    let rook_bb = piece_bb(board, color, Piece::Rook);
-    if rook_bb.popcnt() < 2 {
+    let rooks: Vec<Square> = piece_bb(board, color, Piece::Rook).into_iter().collect();
+    if rooks.len() < 2 {
         return 0;
     }
-    let first_rook = rook_bb.to_square();
     let occupied = *board.combined();
-    let attacks = get_rook_moves(first_rook, occupied);
-    // Check if any other rook is in the attack set
-    if (attacks & rook_bb & !BitBoard::from_square(first_rook)) != BitBoard(0) {
+    // Check if rook 0 can see rook 1
+    let attacks = get_rook_moves(rooks[0], occupied);
+    if attacks & BitBoard::from_square(rooks[1]) != BitBoard(0) {
         CONNECTED_ROOKS_BONUS
     } else {
         0
