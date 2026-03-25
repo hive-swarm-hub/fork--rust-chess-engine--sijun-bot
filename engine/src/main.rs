@@ -421,6 +421,7 @@ struct RustAlphaBetaEngine {
     capture_history: Vec<i16>,
     countermove: Vec<Option<ChessMove>>,  // indexed by previous move's move_key
     move_stack: Vec<Option<ChessMove>>,  // move played at each ply for countermove tracking
+    eval_stack: Vec<i32>,  // static eval at each ply for improving detection
     eval_cache: Vec<EvalCacheEntry>,
     pawn_cache: Vec<PawnCacheEntry>,
     deadline: Option<Instant>,
@@ -439,6 +440,7 @@ impl RustAlphaBetaEngine {
             capture_history: vec![0; HISTORY_SIZE * CAPTURE_HISTORY_PIECES],
             countermove: vec![None; HISTORY_SIZE],
             move_stack: vec![None; KILLER_PLY_CAPACITY],
+            eval_stack: vec![0; KILLER_PLY_CAPACITY],
             eval_cache: vec![EvalCacheEntry::default(); EVAL_CACHE_SIZE],
             pawn_cache: vec![PawnCacheEntry::default(); PAWN_CACHE_SIZE],
             deadline: None,
@@ -567,9 +569,10 @@ impl RustAlphaBetaEngine {
     ) -> Option<(i32, ChessMove)> {
         let mut alpha = -INFINITY;
         let mut beta = INFINITY;
+        let mut delta = ASPIRATION_WINDOW;
         if let Some(score) = previous_score.filter(|_| depth >= 3) {
-            alpha = score - ASPIRATION_WINDOW;
-            beta = score + ASPIRATION_WINDOW;
+            alpha = (score - delta).max(-INFINITY);
+            beta = (score + delta).min(INFINITY);
         }
 
         loop {
@@ -580,13 +583,13 @@ impl RustAlphaBetaEngine {
             };
 
             if alpha != -INFINITY && score <= alpha {
-                alpha = -INFINITY;
-                beta = INFINITY;
+                delta = delta * 3 / 2;
+                alpha = (score - delta).max(-INFINITY);
                 continue;
             }
             if beta != INFINITY && score >= beta {
-                alpha = -INFINITY;
-                beta = INFINITY;
+                delta = delta * 3 / 2;
+                beta = (score + delta).min(INFINITY);
                 continue;
             }
             return Some((score, best_move));
@@ -776,6 +779,7 @@ impl RustAlphaBetaEngine {
             capture_history: self.capture_history.clone(),
             countermove: self.countermove.clone(),
             move_stack: self.move_stack.clone(),
+            eval_stack: self.eval_stack.clone(),
             eval_cache: self.eval_cache.clone(),
             pawn_cache: self.pawn_cache.clone(),
             deadline: self.deadline,
@@ -914,6 +918,12 @@ impl RustAlphaBetaEngine {
         } else {
             None
         };
+
+        // Store static eval for improving detection
+        self.ensure_ply_capacity(ply + 2);
+        self.eval_stack[ply] = static_eval.unwrap_or(0);
+        let improving = !in_check_now && ply >= 2
+            && static_eval.map_or(false, |e| e > self.eval_stack[ply - 2]);
 
         if let Some(eval) = static_eval {
             if effective_depth <= 3
@@ -1064,12 +1074,16 @@ impl RustAlphaBetaEngine {
                         reduction = (reduction - 1).max(0);
                     }
                     // Reduce more if not improving
-                    if let Some(eval) = static_eval {
-                        if eval <= alpha {
-                            reduction += 1;
-                        }
+                    if !improving {
+                        reduction += 1;
                     }
-                    let _ = mk; // suppress warning
+                    // Reduce more for moves with bad history
+                    let hist = self.history_heuristic[mk];
+                    if hist < -2000 {
+                        reduction += 1;
+                    } else if hist > 8000 {
+                        reduction = (reduction - 1).max(0);
+                    }
                     search_depth = (search_depth - reduction).max(0);
                 }
 
@@ -1570,6 +1584,9 @@ impl RustAlphaBetaEngine {
         }
         if self.move_stack.len() < size {
             self.move_stack.resize(size, None);
+        }
+        if self.eval_stack.len() < size {
+            self.eval_stack.resize(size, 0);
         }
     }
 
