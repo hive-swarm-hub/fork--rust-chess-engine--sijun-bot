@@ -196,9 +196,9 @@ const THREAT_QUEEN_BY_ROOK: i32 = 25;
 const PASSED_PAWN_BONUS: [i32; 8] = [0, 8, 12, 20, 35, 60, 90, 0];
 const ENDGAME_PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 4, 8, 16, 32, 56, 0];
 const SUPPORTED_PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 3, 6, 12, 20, 32, 0];
-const REVERSE_FUTILITY_MARGIN: [i32; 4] = [0, 85, 150, 235];
-const FUTILITY_MARGIN: [i32; 4] = [0, 100, 170, 260];
-const RAZOR_MARGIN: [i32; 3] = [0, 250, 380];
+const REVERSE_FUTILITY_MARGIN: [i32; 5] = [0, 85, 150, 235, 320];
+const FUTILITY_MARGIN: [i32; 5] = [0, 100, 170, 260, 350];
+const RAZOR_MARGIN: [i32; 4] = [0, 250, 380, 520];
 
 const PAWN_TABLE: [i32; 64] = [
     0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 10, -20, -20, 10, 10, 5, 5, -5, -10, 0, 0, -10, -5, 5, 0, 0, 0,
@@ -930,13 +930,13 @@ impl RustAlphaBetaEngine {
             && static_eval.map_or(false, |e| e > self.eval_stack[ply - 2]);
 
         if let Some(eval) = static_eval {
-            if effective_depth <= 3
+            if effective_depth <= 4
                 && eval >= beta + REVERSE_FUTILITY_MARGIN[effective_depth as usize]
                 && beta < MATE_SCORE - 1_000
             {
                 return Some(eval);
             }
-            if effective_depth <= 2
+            if effective_depth <= 3
                 && eval + RAZOR_MARGIN[effective_depth as usize] <= alpha
                 && alpha > -MATE_SCORE + 1_000
             {
@@ -1007,7 +1007,7 @@ impl RustAlphaBetaEngine {
 
             if is_quiet && !in_check_now && !gives_check_move {
                 if let Some(eval) = static_eval {
-                    if effective_depth <= 3
+                    if effective_depth <= 4
                         && move_count > 1
                         && eval + FUTILITY_MARGIN[effective_depth as usize] <= alpha
                     {
@@ -1916,6 +1916,8 @@ fn late_move_pruning_limit(depth: i32) -> usize {
         d if d <= 1 => 9,
         2 => 14,
         3 => 22,
+        4 => 32,
+        5 => 45,
         _ => usize::MAX,
     }
 }
