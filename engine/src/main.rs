@@ -141,7 +141,7 @@ use chess::{
 const INFINITY: i32 = 1_000_000;
 const MATE_SCORE: i32 = 100_000;
 const DRAW_SCORE: i32 = 0;
-const CONTEMPT: i32 = 15; // Penalize draws — we have 5:1 time advantage
+const CONTEMPT: i32 = 0;
 const ASPIRATION_WINDOW: i32 = 25;
 const HISTORY_SIZE: usize = 1 << 16;
 const KILLER_PLY_CAPACITY: usize = 128;
@@ -889,19 +889,16 @@ impl RustAlphaBetaEngine {
         };
         let mut tt_move = tt_entry.and_then(|entry| entry.best_move);
 
-        // TT cutoff (not in PV nodes to preserve PV)
-        if !is_pv {
-            if let Some(entry) = tt_entry {
-                if entry.depth >= effective_depth {
-                    match entry.flag {
-                        EXACT => return Some(entry.score),
-                        LOWER_BOUND => alpha = alpha.max(entry.score),
-                        UPPER_BOUND => beta = beta.min(entry.score),
-                        _ => {}
-                    }
-                    if alpha >= beta {
-                        return Some(entry.score);
-                    }
+        if let Some(entry) = tt_entry {
+            if entry.depth >= effective_depth {
+                match entry.flag {
+                    EXACT => return Some(entry.score),
+                    LOWER_BOUND => alpha = alpha.max(entry.score),
+                    UPPER_BOUND => beta = beta.min(entry.score),
+                    _ => {}
+                }
+                if alpha >= beta {
+                    return Some(entry.score);
                 }
             }
         }
@@ -1087,8 +1084,8 @@ impl RustAlphaBetaEngine {
                 }
 
                 let mut search_depth = effective_depth - 1;
-                if effective_depth >= 3
-                    && move_count > 2
+                if effective_depth >= 4
+                    && move_count > 3
                     && is_quiet
                     && !in_check_now
                     && !gives_check_move
@@ -2330,14 +2327,15 @@ fn threat_score(board: &Board, color: Color) -> i32 {
 
 /// Connected rooks: bonus when rooks can see each other (same rank/file, no pieces between)
 fn connected_rooks_score(board: &Board, color: Color) -> i32 {
-    let rooks: Vec<Square> = piece_bb(board, color, Piece::Rook).into_iter().collect();
-    if rooks.len() < 2 {
+    let rook_bb = piece_bb(board, color, Piece::Rook);
+    if rook_bb.popcnt() < 2 {
         return 0;
     }
+    let first_rook = rook_bb.to_square();
     let occupied = *board.combined();
-    // Check if rook 0 can see rook 1
-    let attacks = get_rook_moves(rooks[0], occupied);
-    if attacks & BitBoard::from_square(rooks[1]) != BitBoard(0) {
+    let attacks = get_rook_moves(first_rook, occupied);
+    // Check if any other rook is in the attack set
+    if (attacks & rook_bb & !BitBoard::from_square(first_rook)) != BitBoard(0) {
         CONNECTED_ROOKS_BONUS
     } else {
         0
